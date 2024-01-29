@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/api"
@@ -22,7 +23,8 @@ type QueryResult struct {
 	Err    error
 }
 
-func Prometheus_Query(query Query) QueryResult {
+func Prometheus_Query(query Query, results chan<- QueryResult, wg *sync.WaitGroup) {
+	defer wg.Done()
 	v1api := v1.NewAPI(query.Client)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -30,16 +32,56 @@ func Prometheus_Query(query Query) QueryResult {
 	if len(warnings) > 0 {
 		fmt.Printf("Warnings: %v\n", warnings)
 	}
-	return QueryResult{Query: query.QueryString, Result: result, Err: err}
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+	results <- QueryResult{Query: query.QueryString, Result: result, Err: err}
 }
 
-func QueryWorker(queries <-chan Query, results chan<- QueryResult) {
-	for query := range queries {
-		results <- Prometheus_Query(query)
+func processResult(result QueryResult) (int, map[string]string, map[string]int) {
+	result1 := result.Result
+	switch {
+	case result1.Type() == model.ValScalar:
+		fmt.Printf("Scalar: %v\n", result)
+	case result1.Type() == model.ValVector:
+		return processVectorResult(result1)
+	case result1.Type() == model.ValMatrix:
+		for _, v := range result1.(model.Matrix) {
+			fmt.Printf("Matrix: %v\n", v.Values)
+		}
+	case result1.Type() == model.ValString:
+		fmt.Printf("String: %v\n", result1)
+	case result1.Type() == model.ValNone:
+		fmt.Printf("None: %v\n", result1)
+	default:
+		fmt.Printf("Unknown: %v\n", result1)
 	}
+	return 0, nil, nil
+}
+
+func processVectorResult(result model.Value) (int, map[string]string, map[string]int) {
+	var podallocatedip_sum = make(map[string]int)
+	var subnet_cidr = make(map[string]string)
+	var nodeNumber int
+	for _, v := range result.(model.Vector) {
+		if v.Metric["subnet"] != "" {
+			podallocatedip_sum[fmt.Sprintf("%s", v.Metric["subnet"])] += int(v.Value)
+			subnet_cidr[fmt.Sprintf("%s", v.Metric["subnet"])] = fmt.Sprintf("%s", v.Metric["subnet_cidr"])
+		}
+
+		if v.Metric.String() == "{}" {
+			nodeNumber += int(v.Value)
+		}
+
+	}
+	return nodeNumber, subnet_cidr, podallocatedip_sum
 }
 
 func main() {
+	var podallocatedip_sum = make(map[string]int)
+	var subnet_cidr = make(map[string]string)
+	var nodeNumber, podip_maxmum int
 	client, err := api.NewClient(api.Config{
 		Address: "http://127.0.0.1:9090",
 	})
@@ -55,60 +97,37 @@ func main() {
 		// Add more queries here
 	}
 
-	// Create channels
-	queriesChan := make(chan Query, len(queries))
-	resultsChan := make(chan QueryResult, len(queries))
-
-	// Start workers
-	for w := 0; w < 10; w++ {
-		go QueryWorker(queriesChan, resultsChan)
-	}
-
-	// Send queries to workers
-	for _, query := range queries {
-		queriesChan <- query
-	}
-	close(queriesChan)
-
 	// Collect results
-	for range queries {
-		result := <-resultsChan
-		if result.Err != nil {
-			fmt.Printf("Error querying %s: %v\n", result.Query, result.Err)
-			continue
-		}
-		// Process result here
+	results := make(chan QueryResult, len(queries))
+	var wg sync.WaitGroup
+	for _, query := range queries {
+		wg.Add(1)
+		go Prometheus_Query(query, results, &wg)
+	}
 
-		result1 := result.Result
-		switch {
-		case result1.Type() == model.ValScalar:
-			fmt.Printf("Scalar: %v\n", result)
-		case result1.Type() == model.ValVector:
-			var podallocatedip_sum = make(map[string]int)
-			var subnet_cidr = make(map[string]string)
-			for _, v := range result1.(model.Vector) {
-				if v.Metric["subnet"] != "" {
-					podallocatedip_sum[fmt.Sprintf("%s", v.Metric["subnet"])] += int(v.Value)
-					subnet_cidr[fmt.Sprintf("%s", v.Metric["subnet"])] = fmt.Sprintf("%s", v.Metric["subnet_cidr"])
-				} else {
-					node_number := fmt.Sprintf("%s", v.Value)
-					fmt.Printf("Node number: %v\n", node_number)
-				}
-			}
-			if len(podallocatedip_sum) > 0 {
-				fmt.Printf("Vector: subnet_cidr: %v,%s\n", podallocatedip_sum, subnet_cidr)
-			}
-		case result1.Type() == model.ValMatrix:
-			for _, v := range result1.(model.Matrix) {
-				fmt.Printf("Matrix: %v\n", v.Values)
-			}
-		case result1.Type() == model.ValString:
-			fmt.Printf("String: %v\n", result1)
-		case result1.Type() == model.ValNone:
-			fmt.Printf("None: %v\n", result1)
-		default:
-			fmt.Printf("Unknown: %v\n", result1)
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
 
+	for result := range results {
+		nodeNumber1, subnet_cidr1, podallocatedip_sum1 := processResult(result)
+		if nodeNumber1 > 0 {
+			nodeNumber = nodeNumber1
+		} else {
+			podallocatedip_sum = podallocatedip_sum1
+			subnet_cidr = subnet_cidr1
 		}
 	}
+
+	fmt.Printf("the number of nodes: %v\n", nodeNumber)
+	fmt.Printf("the pod ips allocated in cidr: %v, subnet_cidr: %s\n", podallocatedip_sum, subnet_cidr)
+
+	for _, v := range podallocatedip_sum {
+		podip_maxmum += int(v)
+	}
+
+	podip_maxmum = podip_maxmum + nodeNumber + nodeNumber*8
+	fmt.Printf("the possible maxmum number of pod ips:%v\n", podip_maxmum)
+
 }
