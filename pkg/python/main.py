@@ -48,12 +48,10 @@ def processResult(result: Any) -> None:
         print(f"Error occurred while querying {result.query}: {result.err}")
         return
     if result.result['status'] == 'success':
-        subnet_cidr, pod_ip_count = processVectorResult(result.result['data']['result'])
-        print(f"subnet_cidr per subnet: {subnet_cidr}")
-        print(f"pod_ip_count per subnet: {pod_ip_count}")
+       return processVectorResult(result.result['data']['result'])  
     else:
-        #print(f"Error occurred while querying {result.query}: {result.result}")
         print(f"Error occurred while querying {result.query}: {result.result['errorType']}: {result.result['error']}")
+    
 
 # Process the vector result from prometheus
 def processVectorResult(vector):
@@ -62,16 +60,19 @@ def processVectorResult(vector):
     
     # Iterate over the vector and store the subnet_cidr and pod_ip_count
     for elem in vector:
+        nodeNumber = 0
         if 'subnet' in elem['metric'].keys():
-            subnet=elem['metric']['subnet']
+            subnet=elem['metric']['podnet_arm_id']
+            cidr=elem['metric']['subnet_cidr']
             subnet_cidr[subnet] = elem['metric']['subnet_cidr']
-            pod_ip_count[subnet] += int(elem['value'][1])
-        elif elem['metric']['subnet_cidr']:
-            subnet_cidr[elem['metric']['subnet_cidr']] = elem['value'][1]
-            pod_ip_count[elem['metric']['subnet_cidr']] += int(elem['value'][1])
+            pod_ip_count[cidr] += int(elem['value'][1])
+        elif elem['metric'] == {}:
+            nodeNumber = int(elem['value'][1])
         else:
             print(f"Error occurred while querying {elem}: {elem['metric']}")
-    return  subnet_cidr, pod_ip_count
+    #print(subnet_cidr, pod_ip_count, nodeNumber)
+    return  subnet_cidr, pod_ip_count, nodeNumber
+
         
 # Main function
 async def main() -> None:
@@ -81,8 +82,8 @@ async def main() -> None:
     }
     base_url = "http://127.0.0.1:9090/api/v1/query"
     # query as list input
-    queries =[f"{base_url}?query=cx_ipam_total_ips{{subnet_cidr=~\".*\"}}",
-            f"{base_url}?query=sum(cx_ipam_total_ips{{subnet_cidr=~\".*\"}}) by (subnet_cidr)"]
+    queries =[f"{base_url}?query=cx_ipam_pod_allocated_ips",
+            f"{base_url}?query=sum(kube_node_info)"]
     ch = MetricsQuery(print, headers)
     async with aiohttp.ClientSession() as session:
         try:
@@ -90,7 +91,15 @@ async def main() -> None:
             await asyncio.gather(*(ch.Prometheus_Query(session, query) for query in queries))
             await ch.close()
             async for result in ch:
-                processResult(result)
+                subnet_cidr, pod_ip_count,nodeNumber1 = processResult(result)
+                if nodeNumber1 > 0:
+                    nodeNumber = nodeNumber1
+                else:
+                    pod_ip_number = sum(pod_ip_count.values())
+                    print(f"subnet_cidr: {subnet_cidr}")
+            total_ip = pod_ip_number + nodeNumber + nodeNumber * 8
+            print(f"number of nodes: {nodeNumber}")
+            print(f"number of total reserved ips by AKS Cluster: {total_ip}")
         except Exception as e:
             print(f"Error occurred while querying {queries}: {e}")
 
