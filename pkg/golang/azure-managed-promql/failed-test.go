@@ -24,8 +24,8 @@ func main() {
 	authendpoint := "https://login.microsoftonline.com/16b3c013-d300-468d-ac64-7eda0820b6d3/oauth2/token"
 	body := url.Values(map[string][]string{
 		"resource":      {"https://prometheus.monitor.azure.com"},
-		"client_id":     {"660ccd58-9a5f-4199-9060-6cfc7e7d5882"},
-		"client_secret": {"H1-8Q~1vD-u3s0rj~Jopw91qS7rxt5zkSitsHdpY"},
+		"client_id":     {"xxx"},
+		"client_secret": {"xxx"},
 		"grant_type":    {"client_credentials"}})
 	
 	type ResponseData struct {
