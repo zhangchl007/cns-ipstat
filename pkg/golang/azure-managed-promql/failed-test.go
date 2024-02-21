@@ -4,68 +4,46 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"encoding/json"
-	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/prometheus/client_golang/api"
-	"github.com/prometheus/common/config"
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/common/config"
 )
 
 const subscriptionID = "ffa067fd-36c1-4774-a161-7ebdac9a934f"
 
 func main() {
 
-	// Get aad access token by rest api
+	// Define Azure service principal credentials
+	clientID := "xxxx"
+	clientsecret := "xxxx"
+	tenantID := "xxxxx"
 
-	authendpoint := "https://login.microsoftonline.com/16b3c013-d300-468d-ac64-7eda0820b6d3/oauth2/token"
-	body := url.Values(map[string][]string{
-		"resource":      {"https://prometheus.monitor.azure.com"},
-		"client_id":     {"660ccd58-9a5f-4199-9060-6cfc7e7d5882"},
-		"client_secret": {"H1-8Q~1vD-u3s0rj~Jopw91qS7rxt5zkSitsHdpY"},
-		"grant_type":    {"client_credentials"}})
-	
-	type ResponseData struct {
-	    AccessToken string `json:"access_token"`
-	}
+	// Create a new service principal credential
+	cred, err := azidentity.NewClientSecretCredential(tenantID, clientID, clientsecret, nil)
 
-	// Create a new request
-	request, err := http.NewRequest(
-		http.MethodPost,
-		authendpoint,
-		strings.NewReader(body.Encode()))
 	if err != nil {
 		panic(err)
 	}
-	// Set the content type to x-www-form-urlencoded
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	cs := &http.Client{}
-	resp, err := cs.Do(request)
+
+	// Get aad oauth token
+	token, err := cred.GetToken(context.Background(), policy.TokenRequestOptions{Scopes: []string{"https://management.core.windows.net//.default"}})
 	if err != nil {
-		panic(err)
+		fmt.Printf("Error getting token: %v\n", err)
+		os.Exit(1)
 	}
-	defer resp.Body.Close()
 
-	        decoder := json.NewDecoder(resp.Body)
-        if err != nil {
-                panic(err)
-        }
+	// Print the token
+	fmt.Printf("Token: %s\n", token.Token)
 
-        // Create a new ResponseData to hold the decoded data
-        data := new(ResponseData)
-
-        // Decode the response body into the ResponseData
-        err = decoder.Decode(data)
-
-        //fmt.Printf("Access Token: %v\n", data.AccessToken)
-	// Create a new Prometheus API client
+	// Create a new Prometheus API client with the token
 
 	client, err := api.NewClient(api.Config{
-		Address: "https://azuremonitor-xyk3.eastus.prometheus.monitor.azure.com",
-		RoundTripper: config.NewAuthorizationCredentialsRoundTripper("Bearer", config.Secret(data.AccessToken), api.DefaultRoundTripper),
+		Address:      "http://localhost:9090",
+		RoundTripper: config.NewAuthorizationCredentialsRoundTripper("Bearer", config.Secret(token.Token), api.DefaultRoundTripper),
 	})
 
 	if err != nil {
@@ -78,7 +56,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, warnings, err := v1api.Query(ctx, "sum(kube_node_info)", time.Now(),v1.WithTimeout(5*time.Second))
+	result, warnings, err := v1api.Query(ctx, "up", time.Now())
 
 	if err != nil {
 		fmt.Printf("Error querying Prometheus: %v\n", err)
@@ -90,4 +68,3 @@ func main() {
 	fmt.Printf("Result:\n%v\n", result)
 
 }
-
