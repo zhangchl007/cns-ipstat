@@ -15,7 +15,7 @@ import (
 	"github.com/prometheus/common/config"
 )
 
-const subscriptionID = "ffa067fd-36c1-4774-a161-7ebdac9a934f"
+const subscriptionID = "xxxxxxxxxxxxxxxxxx"
 
 var httpClient = &http.Client{}
 
